@@ -1,11 +1,23 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { db } from '../firebase';
+import {
+  collection,
+  doc,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+} from 'firebase/firestore';
 
 const DataContext = createContext();
 
 export const useData = () => useContext(DataContext);
 
-const STORAGE_KEY = 'amazing_budgets';
+const BUDGETS_COLLECTION = 'budgets';
 
 const KANBAN_COLUMNS = [
   { id: 'new', label: 'Novo', dotClass: 'new' },
@@ -15,32 +27,30 @@ const KANBAN_COLUMNS = [
   { id: 'lost', label: 'Perdido', dotClass: 'lost' },
 ];
 
-function loadBudgets() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveBudgets(budgets) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(budgets));
-  } catch {
-    // localStorage full or unavailable
-  }
-}
-
 export function DataProvider({ children }) {
-  const [budgets, setBudgets] = useState(loadBudgets);
+  const [budgets, setBudgets] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState('all');
   const [toasts, setToasts] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Save budgets to localStorage whenever they change
+  // Real-time listener for Firestore budgets
   useEffect(() => {
-    saveBudgets(budgets);
-  }, [budgets]);
+    const q = query(collection(db, BUDGETS_COLLECTION), orderBy('createdAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const budgetList = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setBudgets(budgetList);
+      setIsLoading(false);
+    }, (error) => {
+      console.error('Erro ao carregar orçamentos:', error);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const addToast = useCallback((message, type = 'info') => {
     const id = uuidv4();
@@ -50,39 +60,58 @@ export function DataProvider({ children }) {
     }, 3500);
   }, []);
 
-  const addBudget = useCallback((budget) => {
-    const newBudget = {
-      ...budget,
-      id: uuidv4(),
-      status: 'new',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    setBudgets(prev => [newBudget, ...prev]);
-    addToast('Orçamento adicionado com sucesso!', 'success');
-    return newBudget;
+  const addBudget = useCallback(async (budget) => {
+    try {
+      const newBudget = {
+        ...budget,
+        status: 'new',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const docRef = await addDoc(collection(db, BUDGETS_COLLECTION), newBudget);
+      addToast('Orçamento adicionado com sucesso!', 'success');
+      return { ...newBudget, id: docRef.id };
+    } catch (error) {
+      console.error('Erro ao adicionar orçamento:', error);
+      addToast('Erro ao salvar orçamento', 'error');
+      return null;
+    }
   }, [addToast]);
 
-  const updateBudgetStatus = useCallback((budgetId, newStatus) => {
-    setBudgets(prev => prev.map(b =>
-      b.id === budgetId
-        ? { ...b, status: newStatus, updatedAt: new Date().toISOString() }
-        : b
-    ));
-    addToast('Status atualizado!', 'success');
+  const updateBudgetStatus = useCallback(async (budgetId, newStatus) => {
+    try {
+      const budgetRef = doc(db, BUDGETS_COLLECTION, budgetId);
+      await updateDoc(budgetRef, {
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+      });
+      addToast('Status atualizado!', 'success');
+    } catch (error) {
+      console.error('Erro ao atualizar status:', error);
+      addToast('Erro ao atualizar status', 'error');
+    }
   }, [addToast]);
 
-  const updateBudget = useCallback((budgetId, updates) => {
-    setBudgets(prev => prev.map(b =>
-      b.id === budgetId
-        ? { ...b, ...updates, updatedAt: new Date().toISOString() }
-        : b
-    ));
+  const updateBudget = useCallback(async (budgetId, updates) => {
+    try {
+      const budgetRef = doc(db, BUDGETS_COLLECTION, budgetId);
+      await updateDoc(budgetRef, {
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Erro ao atualizar orçamento:', error);
+    }
   }, []);
 
-  const deleteBudget = useCallback((budgetId) => {
-    setBudgets(prev => prev.filter(b => b.id !== budgetId));
-    addToast('Orçamento removido.', 'info');
+  const deleteBudget = useCallback(async (budgetId) => {
+    try {
+      await deleteDoc(doc(db, BUDGETS_COLLECTION, budgetId));
+      addToast('Orçamento removido.', 'info');
+    } catch (error) {
+      console.error('Erro ao remover orçamento:', error);
+      addToast('Erro ao remover orçamento', 'error');
+    }
   }, [addToast]);
 
   const getFilteredBudgets = useCallback((company = selectedCompany) => {
@@ -164,26 +193,33 @@ export function DataProvider({ children }) {
     return Object.values(statusMap);
   }, [getFilteredBudgets, selectedCompany]);
 
-  const importBudgetsFromData = useCallback((data, company) => {
-    const newBudgets = data.map(row => ({
-      id: uuidv4(),
-      company,
-      clientName: row['Cliente'] || row['client'] || row['nome'] || row['Nome'] || '',
-      clientEmail: row['Email'] || row['email'] || '',
-      clientPhone: row['Telefone'] || row['telefone'] || row['phone'] || '',
-      product: row['Produto'] || row['produto'] || row['product'] || '',
-      region: row['Região'] || row['regiao'] || row['region'] || '',
-      state: row['Estado'] || row['estado'] || row['state'] || row['UF'] || row['uf'] || '',
-      city: row['Cidade'] || row['cidade'] || row['city'] || '',
-      value: parseFloat(row['Valor'] || row['valor'] || row['value'] || 0),
-      quantity: row['Quantidade'] || row['quantidade'] || row['quantity'] || '',
-      status: 'new',
-      notes: row['Observações'] || row['observacoes'] || row['notes'] || '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }));
-    setBudgets(prev => [...newBudgets, ...prev]);
-    addToast(`${newBudgets.length} orçamentos importados com sucesso!`, 'success');
+  const importBudgetsFromData = useCallback(async (data, company) => {
+    try {
+      const promises = data.map(row => {
+        const budget = {
+          company,
+          clientName: row['Cliente'] || row['client'] || row['nome'] || row['Nome'] || '',
+          clientEmail: row['Email'] || row['email'] || '',
+          clientPhone: row['Telefone'] || row['telefone'] || row['phone'] || '',
+          product: row['Produto'] || row['produto'] || row['product'] || '',
+          region: row['Região'] || row['regiao'] || row['region'] || '',
+          state: row['Estado'] || row['estado'] || row['state'] || row['UF'] || row['uf'] || '',
+          city: row['Cidade'] || row['cidade'] || row['city'] || '',
+          value: parseFloat(row['Valor'] || row['valor'] || row['value'] || 0),
+          quantity: row['Quantidade'] || row['quantidade'] || row['quantity'] || '',
+          status: 'new',
+          notes: row['Observações'] || row['observacoes'] || row['notes'] || '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return addDoc(collection(db, BUDGETS_COLLECTION), budget);
+      });
+      await Promise.all(promises);
+      addToast(`${data.length} orçamentos importados com sucesso!`, 'success');
+    } catch (error) {
+      console.error('Erro ao importar orçamentos:', error);
+      addToast('Erro ao importar orçamentos', 'error');
+    }
   }, [addToast]);
 
   const value = {
@@ -204,6 +240,7 @@ export function DataProvider({ children }) {
     KANBAN_COLUMNS,
     toasts,
     addToast,
+    isLoading,
   };
 
   return (
