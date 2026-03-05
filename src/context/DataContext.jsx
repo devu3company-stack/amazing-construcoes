@@ -1,9 +1,11 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
 const DataContext = createContext();
 
 export const useData = () => useContext(DataContext);
+
+const STORAGE_KEY = 'amazing_budgets';
 
 const KANBAN_COLUMNS = [
   { id: 'new', label: 'Novo', dotClass: 'new' },
@@ -13,10 +15,32 @@ const KANBAN_COLUMNS = [
   { id: 'lost', label: 'Perdido', dotClass: 'lost' },
 ];
 
+function loadBudgets() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBudgets(budgets) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(budgets));
+  } catch {
+    // localStorage full or unavailable
+  }
+}
+
 export function DataProvider({ children }) {
-  const [budgets, setBudgets] = useState([]);
+  const [budgets, setBudgets] = useState(loadBudgets);
   const [selectedCompany, setSelectedCompany] = useState('all');
   const [toasts, setToasts] = useState([]);
+
+  // Save budgets to localStorage whenever they change
+  useEffect(() => {
+    saveBudgets(budgets);
+  }, [budgets]);
 
   const addToast = useCallback((message, type = 'info') => {
     const id = uuidv4();
